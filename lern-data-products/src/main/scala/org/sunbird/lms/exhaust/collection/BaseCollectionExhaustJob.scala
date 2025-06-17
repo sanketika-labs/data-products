@@ -237,6 +237,10 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
       val completedBatchIds = completedBatches.map(f=> f.batchId)
       val collectionBatches = getCollectionBatches(collectionConfig.batchId, collectionConfig.batchFilter, collectionConfig.searchFilter, custodianOrgId, request.requested_channel)
       val collectionBatchesData = collectionBatches._2.filter(p=> !completedBatchIds.contains(p.batchId))
+
+//      val courseId = collectionBatchesData.map(x=>x.collectionId)
+//      println("courseId", courseId)
+      //val courseCode = getCourseCode()
       //SB-26292: The request should fail if the course is retired with err_message: The request is made for retired collection
       if(collectionBatches._2.size > 0) {
         val result = CommonUtil.time(processBatches(userCachedDF, collectionBatchesData, storageConfig, Some(request.request_id), Some(request.requested_channel), processedRequests.toList, level, orgId, request.encryption_key, request))
@@ -356,10 +360,14 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
       val userEnrolmentDf = getUserEnrolmentDF(parallelBatch.map(f => f.batchId), persist = true)
       val batchResponseList= for (batch <- parallelBatch) yield {
         if (checkRequestProcessCriteria(processedCount, processedSize)) {
+          val courseCode = getCourseCode(batch.collectionId)
+          val learnerProfile = getLearnerProfile(batch.collectionId)
           val userEnrolmentBatchDF = userEnrolmentDf.where(col("batchid") === batch.batchId && col("courseid") === batch.collectionId)
             .join(userCachedDF, Seq("userid"), "inner")
             .withColumn("collectionName", lit(batch.collectionName))
             .withColumn("batchName", lit(batch.batchName))
+            .withColumn("coursecode", lit(courseCode))
+            .withColumn("learnerprofile", lit(learnerProfile))
             .repartition(AppConf.getConfig("exhaust.user.parallelism").toInt,col("userid"),col("courseid"),col("batchid"))
           val filteredDF = filterUsers(batch, userEnrolmentBatchDF).persist()
           val res = CommonUtil.time(filteredDF.count);
@@ -496,6 +504,50 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
     contentDf
   }
 
+  def getCourseCode(courseId: String)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): String = {
+    val apiURL = Constants.COMPOSITE_SEARCH_URL
+    val searchFilter = Map(
+      "request" -> Map(
+        "filters" -> Map(
+          "identifier" -> courseId,
+          "status" -> List("Live")
+        ),
+        "limit" -> 1,
+        "fields" -> List("code"),
+        "offset" -> null
+      )
+    )
+    val request = JSONUtils.serialize(searchFilter)
+    val response = RestUtil.post[CollectionDetails](apiURL, request).result
+    val result = response.getOrElse("content", List())
+    val codeList = JSONUtils.deserialize[List[Map[String, Any]]](JSONUtils.serialize(result))
+    codeList.headOption.flatMap(_.get("code")).map(_.toString).getOrElse("")
+  }
+
+  def getLearnerProfile(courseId: String)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): String = {
+    val apiURL = Constants.COMPOSITE_SEARCH_URL
+    val searchFilter = Map(
+      "request" -> Map(
+        "filters" -> Map(
+          "primaryCategory"-> "Learner Profile",
+          "children" -> List(courseId),
+          "status" -> List("Live")
+        ),
+        "limit" -> 100,
+        "sort_by" -> Map(
+          "lastPublishedOn" -> "desc"
+        ),
+        "fields" -> List("identifier","lastPublishedOn","code","name"),
+        "offset" -> null
+      )
+    )
+    val request = JSONUtils.serialize(searchFilter)
+    val response = RestUtil.post[CollectionDetails](apiURL, request).result
+    val result = response.getOrElse("content", List())
+    val learnerProfileList = JSONUtils.deserialize[List[Map[String, Any]]](JSONUtils.serialize(result))
+    learnerProfileList.headOption.flatMap(_.get("name")).map(_.toString).getOrElse("")
+  }
+
   def getCollectionBatchDF(persist: Boolean)(implicit spark: SparkSession): DataFrame = {
     val df = loadData(collectionBatchDBSettings, cassandraFormat, new StructType())
       .withColumn("startdate", UDFUtils.getLatestValue(col("start_date"), col("startdate")))
@@ -513,8 +565,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
       .withColumn("province", UDFUtils.extractProvince(col("profileConfig")))
       df.select(cols.head, cols.tail: _*)
       .repartition(AppConf.getConfig("exhaust.user.parallelism").toInt,col("userid"))
-    println("userdf..")
-    df.show(false)
     if (persist) df.persist() else df
   }
 
@@ -574,8 +624,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
     val dynamicColumns = fields.toList.filter(e => !finalColumnMapping.keySet.contains(e))
     val columnWithOrder = (finalColumnOrder ::: dynamicColumns).distinct
     val res = reportDF.withColumn("batchid", concat(lit("BatchId_"), col("batchid"))).toDF(colNames: _*).select(columnWithOrder.head, columnWithOrder.tail: _*).na.fill("")
-    println("organize df")
-    res.show(false)
     res
   }
   /** END - Utility Methods */
