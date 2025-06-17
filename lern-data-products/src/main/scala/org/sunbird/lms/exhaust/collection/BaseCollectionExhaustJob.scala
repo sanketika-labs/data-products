@@ -30,7 +30,7 @@ import scala.collection.mutable.ListBuffer
 
 case class UserData(userid: String, state: Option[String] = Option(""), district: Option[String] = Option(""), orgname: Option[String] = Option(""), firstname: Option[String] = Option(""), lastname: Option[String] = Option(""), email: Option[String] = Option(""),
                     phone: Option[String] = Option(""), rootorgid: String, block: Option[String] = Option(""), schoolname: Option[String] = Option(""), schooludisecode: Option[String] = Option(""), board: Option[String] = Option(""), cluster: Option[String] = Option(""),
-                    usertype: Option[String] = Option(""), usersubtype: Option[String] = Option(""))
+                    usertype: Option[String] = Option(""), usersubtype: Option[String] = Option(""), profileConfig: Option[String] = None)
 
 case class CollectionConfig(batchId: Option[String], searchFilter: Option[Map[String, AnyRef]], batchFilter: Option[List[String]])
 case class CollectionBatch(batchId: String, collectionId: String, batchName: String, custodianOrgId: String, requestedOrgId: String, collectionOrgId: String, collectionName: String, userConsent: Option[String] = Some("No"))
@@ -39,6 +39,11 @@ case class CollectionDetails(result: Map[String, AnyRef])
 case class CollectionInfo(channel: String, identifier: String, name: String, userConsent: Option[String], status: String)
 case class Metrics(totalRequests: Option[Int], failedRequests: Option[Int], successRequests: Option[Int], duplicateRequests: Option[Int])
 case class ProcessedRequest(channel: String, batchId: String, filePath: String, fileSize: Long)
+
+case class UserAggData(user_id: String, activity_id: String, completedCount: Int, context_id: String)
+case class CourseData(courseid: String, leafNodesCount: String, level1Data: List[Level1Data])
+case class Level1Data(l1identifier: String, l1leafNodesCount: String)
+case class AssessmentData(courseid: String, assessmentIds: List[String])
 
 trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExhaustJob with Serializable {
 
@@ -104,7 +109,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
     val mode = modelParams.getOrElse("mode", "OnDemand").asInstanceOf[String];
 
     val custodianOrgId = getCustodianOrgId();
-
     val res = CommonUtil.time({
       val userDF = getUserCacheDF(getUserCacheColumns(), persist = true)
       (userDF.count(), userDF)
@@ -340,7 +344,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
   }
 
   def processBatches(userCachedDF: DataFrame, collectionBatches: List[CollectionBatch], storageConfig: StorageConfig, requestId: Option[String], requestChannel: Option[String], processedRequests: List[ProcessedRequest], level:String, orgId:String, encryptionKey:Option[String], jobRequest: JobRequest)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): List[CollectionBatchResponse] = {
-
     var processedCount = if(processedRequests.isEmpty) 0 else processedRequests.count(f => f.channel.equals(requestChannel.getOrElse("")))
     var processedSize = if(processedRequests.isEmpty) 0 else processedRequests.filter(f => f.channel.equals(requestChannel.getOrElse(""))).map(f => f.fileSize).sum
     JobLogger.log("Channel details at processBatches", Some(Map("channel" -> requestChannel, "file size" -> processedSize, "completed batches" -> processedCount)), INFO)
@@ -503,8 +506,15 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
 
   def getUserCacheDF(cols: Seq[String], persist: Boolean)(implicit spark: SparkSession): DataFrame = {
     val schema = Encoders.product[UserData].schema
-    val df = loadData(userCacheDBSettings, redisFormat, schema).withColumn("username", concat_ws(" ", col("firstname"), col("lastname"))).select(cols.head, cols.tail: _*)
+    val df = loadData(userCacheDBSettings, redisFormat, schema)
+      .withColumn("username", concat_ws(" ", col("firstname"), col("lastname")))
+      .withColumn("cin", UDFUtils.extractCIN(col("profileConfig")))
+      .withColumn("fmpsid", UDFUtils.extractFMPSID(col("profileConfig")))
+      .withColumn("province", UDFUtils.extractProvince(col("profileConfig")))
+      df.select(cols.head, cols.tail: _*)
       .repartition(AppConf.getConfig("exhaust.user.parallelism").toInt,col("userid"))
+    println("userdf..")
+    df.show(false)
     if (persist) df.persist() else df
   }
 
@@ -563,7 +573,10 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
     val colNames = for (e <- fields) yield finalColumnMapping.getOrElse(e, e)
     val dynamicColumns = fields.toList.filter(e => !finalColumnMapping.keySet.contains(e))
     val columnWithOrder = (finalColumnOrder ::: dynamicColumns).distinct
-    reportDF.withColumn("batchid", concat(lit("BatchId_"), col("batchid"))).toDF(colNames: _*).select(columnWithOrder.head, columnWithOrder.tail: _*).na.fill("")
+    val res = reportDF.withColumn("batchid", concat(lit("BatchId_"), col("batchid"))).toDF(colNames: _*).select(columnWithOrder.head, columnWithOrder.tail: _*).na.fill("")
+    println("organize df")
+    res.show(false)
+    res
   }
   /** END - Utility Methods */
 
@@ -628,4 +641,48 @@ object UDFUtils extends Serializable {
 
   def convertStringToList: UserDefinedFunction =
     udf { str: String => JSONUtils.deserialize[List[Question]](str) }
+
+  // UDF to extract a field from the first element of profileConfig array (which is a JSON string)
+  def extractFieldFromProfileConfigFun(profileConfig: Any, field: String): String = {
+    try {
+      profileConfig match {
+        case str: String if str.nonEmpty =>
+          // Parse as JSON array of JSON strings (escaped)
+          try {
+            val arr = JSONUtils.deserialize[Seq[String]](str)
+            arr.headOption match {
+              case Some(jsonStr) =>
+                try {
+                  val json = JSONUtils.deserialize[Map[String, String]](jsonStr)
+                  json.getOrElse(field, "")
+                } catch {
+                  case _: Exception => ""
+                }
+              case None => ""
+            }
+          } catch {
+            case _: Exception => ""
+          }
+        case arr: Seq[_] if arr.nonEmpty && arr.head.isInstanceOf[String] =>
+          // Defensive: handle if profileConfig is already a Seq[String]
+          arr.headOption match {
+            case Some(jsonStr: String) =>
+              try {
+                val json = JSONUtils.deserialize[Map[String, String]](jsonStr)
+                json.getOrElse(field, "")
+              } catch {
+                case _: Exception => ""
+              }
+            case _ => ""
+          }
+        case _ => ""
+      }
+    } catch {
+      case _: Exception => ""
+    }
+  }
+
+  val extractCIN = udf((profileConfig: Any) => extractFieldFromProfileConfigFun(profileConfig, "cin"))
+  val extractFMPSID = udf((profileConfig: Any) => extractFieldFromProfileConfigFun(profileConfig, "idFmps"))
+  val extractProvince = udf((profileConfig: Any) => extractFieldFromProfileConfigFun(profileConfig, "province"))
 }

@@ -8,34 +8,29 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.ekstep.analytics.framework.Level.INFO
 import org.ekstep.analytics.framework.conf.AppConf
-import org.ekstep.analytics.framework.util.{JSONUtils, JobLogger}
+import org.ekstep.analytics.framework.util.JSONUtils
 import org.ekstep.analytics.framework.{FrameworkContext, JobConfig}
 
-import scala.collection.immutable.Set
-import scala.collection.mutable
-
-//case class UserAggData(user_id: String, activity_id: String, completedCount: Int, context_id: String)
-//case class CourseData(courseid: String, leafNodesCount: String, level1Data: List[Level1Data])
-//case class Level1Data(l1identifier: String, l1leafNodesCount: String)
-//case class AssessmentData(courseid: String, assessmentIds: List[String])
-//
 object ProgressExhaustJobV3 extends BaseCollectionExhaustJob {
 
   override def getClassName = "org.sunbird.lms.exhaust.collection.ProgressExhaustJob"
+
   override def jobName() = "ProgressExhaustJob";
+
   override def jobId() = "progress-exhaust";
+
   override def getReportPath() = "progress-exhaust/";
+
   override def getReportKey() = "progress";
-  private val persistedDF:scala.collection.mutable.ListBuffer[DataFrame] = scala.collection.mutable.ListBuffer[DataFrame]();
+  private val persistedDF: scala.collection.mutable.ListBuffer[DataFrame] = scala.collection.mutable.ListBuffer[DataFrame]();
   private val defaultObjectType = "QuestionSet";
 
   override def getUserCacheColumns(): Seq[String] = {
-    Seq("userid", "firstname", "lastname", "email", "state", "district", "cluster", "orgname", "schooludisecode", "schoolname", "block", "board", "rootorgid", "usertype", "usersubtype")
+    Seq("userid", "firstname", "lastname", "email", "state", "district", "cluster", "orgname", "schooludisecode", "schoolname", "block", "board", "rootorgid", "usertype", "usersubtype", "username", "cin", "fmpsid","province")
   }
 
-  override def getEnrolmentColumns() : Seq[String] = {
+  override def getEnrolmentColumns(): Seq[String] = {
     Seq("batchid", "userid", "courseid", "active", "certificates", "issued_certificates", "enrolleddate", "completedon", "contentstatus")
   }
 
@@ -47,27 +42,33 @@ object ProgressExhaustJobV3 extends BaseCollectionExhaustJob {
   private val assessmentAggDBSettings = Map("table" -> "assessment_aggregator", "keyspace" -> AppConf.getConfig("sunbird.courses.keyspace"), "cluster" -> "LMSCluster");
   private val contentHierarchyDBSettings = Map("table" -> "content_hierarchy", "keyspace" -> AppConf.getConfig("sunbird.content.hierarchy.keyspace"), "cluster" -> "ContentCluster");
   //private val filterColumns = Seq("courseid", "collectionName", "batchid", "batchName", "userid",  "state", "district", "orgname", "schooludisecode", "schoolname", "board", "block", "cluster", "usertype", "usersubtype", "enrolleddate", "completedon", "certificatestatus", "completionPercentage");
-  private val columnsOrder = List("Collection Id", "Collection Name", "Batch Id", "Batch Name", "User UUID", "State", "District", "Org Name", "School Id",
-    "School Name", "Block Name", "Cluster Name", "User Type", "User Sub Type", "Declared Board", "Enrolment Date", "Completion Date", "Certificate Status", "Progress", "Total Score")
-  private val columnMapping = Map("courseid" -> "Collection Id", "collectionName" -> "Collection Name", "batchid" -> "Batch Id", "batchName" -> "Batch Name", "userid" -> "User UUID",
-    "state" -> "State", "district" -> "District", "orgname" -> "Org Name", "schooludisecode" -> "School Id", "schoolname" -> "School Name", "block" -> "Block Name",
-    "cluster" -> "Cluster Name", "usertype" -> "User Type", "usersubtype" -> "User Sub Type", "board" -> "Declared Board", "enrolleddate" -> "Enrolment Date", "completedon" -> "Completion Date",
-    "completionPercentage" -> "Progress", "total_sum_score" -> "Total Score", "certificatestatus" -> "Certificate Status")
+  private val columnsOrder = List("Course ID", "Course Name", "Batch Id", "Batch Name", "User ID", "User Name", "First Name", "Last Name", "Email ID", "FMPS ID", "CIN", "Province", "State", "District", "Org Name", "User Type", "User Sub Type",  "Enrolment Date", "Completion Date", "Certificate Status", "Progress", "Total Score")
+
+  private val columnMapping = Map("courseid" -> "Course ID", "collectionName" -> "Course Name", "batchid" -> "Batch Id", "batchName" -> "Batch Name", "userid" -> "User ID",
+    "state" -> "State", "district" -> "District", "orgname" -> "Org Name", "usertype" -> "User Type", "usersubtype" -> "User Sub Type",  "enrolleddate" -> "Enrolment Date", "completedon" -> "Completion Date",
+    "completionPercentage" -> "Progress", "total_sum_score" -> "Total Score", "certificatestatus" -> "Certificate Status", "username" -> "User Name", "firstname" -> "First Name", "lastname" -> "Last Name", "email" -> "Email ID", "fmpsid" -> "FMPS ID", "cin" -> "CIN", "province" -> "Province" )
 
   override def processBatch(userEnrolmentDF: DataFrame, collectionBatch: CollectionBatch)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): DataFrame = {
-    val filterColumns : List[String] = config.modelParams.get.getOrElse("csvColumns", List[String]()).asInstanceOf[List[String]]
+    val filterColumns: List[String] = config.modelParams.get.getOrElse("csvColumns", List[String]()).asInstanceOf[List[String]]
     val hierarchyData = loadCollectionHierarchy(collectionBatch.collectionId)
     //val collectionAggDF = getCollectionAggWithModuleData(collectionBatch, hierarchyData).withColumn("batchid", lit(collectionBatch.batchId));
     //val enrolledUsersToBatch = updateCertificateStatus(userEnrolmentDF).select(filterColumns.head, filterColumns.tail: _*)
     val assessmentAggDF = getAssessmentDF(collectionBatch, userEnrolmentDF, hierarchyData);
+//    println("assessmentDF")
+//    assessmentAggDF.show(false)
     //get optional node from
     val leafNodesCount = getLeafNodeCount(hierarchyData);
     val optionalNodes = getOptionalNodes(collectionBatch.collectionId)
     //val broadcastedSet = spark.sparkContext.broadcast(optionalNodes)
+    println("userEnrolmentDF")
+    userEnrolmentDF.show(false)
     val enrolmentWithCompletions = userEnrolmentDF.withColumn("completionPercentage", UDFUtils.completionPercentage(col("contentstatus"), lit(leafNodesCount), typedLit(optionalNodes)));
+
     val enrolledUsersToBatch = updateCertificateStatus(enrolmentWithCompletions).select(filterColumns.head, filterColumns.tail: _*)
     //val progressDF = getProgressDF(enrolledUsersToBatch, collectionAggDF, assessmentAggDF);
     val progressDF = getProgressDF(enrolledUsersToBatch, null, assessmentAggDF);
+    //println("progressDF")
+    //progressDF.show(false)
     organizeDF(progressDF, columnMapping, columnsOrder);
   }
 
@@ -107,7 +108,7 @@ object ProgressExhaustJobV3 extends BaseCollectionExhaustJob {
       .withColumnRenamed("user_id", "userid")
       .withColumnRenamed("batch_id", "batchid")
       .withColumnRenamed("course_id", "courseid")
-    val assessmentDF = userEnrolmentDF.join(df, Seq("userid","courseid","batchid"), "inner").persist()
+    val assessmentDF = userEnrolmentDF.join(df, Seq("userid", "courseid", "batchid"), "inner").persist()
     persistedDF.append(assessmentDF)
     assessmentDF
   }
@@ -147,14 +148,14 @@ object ProgressExhaustJobV3 extends BaseCollectionExhaustJob {
     loadData(contentHierarchyDBSettings, cassandraFormat, new StructType()).where(col("identifier") === s"${identifier}").select("identifier", "hierarchy")
   }
 
-  def getLeafNodeCount(hierarchyData: DataFrame) : Int = {
+  def getLeafNodeCount(hierarchyData: DataFrame): Int = {
     hierarchyData.rdd.map(row => {
       val hierarchy = JSONUtils.deserialize[Map[String, AnyRef]](row.getString(1))
       hierarchy.getOrElse("leafNodesCount", 0).asInstanceOf[Int]
     }).collect().head
   }
 
-  def getOptionalNodes(courseId: String) : Seq[String] = {
+  def getOptionalNodes(courseId: String): Seq[String] = {
     var optionalList = jedis.smembers(s"$courseId:$courseId:${AppConf.getConfig("sunbird.course.optionalnodes")}")
     import scala.collection.JavaConversions._
     optionalList.toSeq
