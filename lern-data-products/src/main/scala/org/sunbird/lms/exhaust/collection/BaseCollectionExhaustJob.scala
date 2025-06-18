@@ -20,7 +20,7 @@ import org.joda.time.{DateTime, DateTimeZone}
 import org.sunbird.core.exhaust.{BaseReportsJob, JobRequest, OnDemandExhaustJob}
 import org.sunbird.core.util.DataSecurityUtil.{getPIIFieldDetails, getSecuredExhaustFile, getSecurityLevel}
 import org.sunbird.core.util.{DecryptUtil, RedisConnect, RedisSafeSearch}
-import org.sunbird.lms.exhaust.collection.ProgressExhaustJobV3.jedis
+import org.sunbird.lms.exhaust.collection.ProgressExhaustJob.jedis
 import org.sunbird.lms.exhaust.collection.ResponseExhaustJobV2.Question
 
 import java.security.MessageDigest
@@ -826,7 +826,6 @@ object UDFUtils extends Serializable {
       case _: Exception => ""
     }
   }
-
 
   val extractCIN = udf((profileConfig: Any) => extractFieldFromProfileConfigFun(profileConfig, "cin"))
   val extractFMPSID = udf((profileConfig: Any) => extractFieldFromProfileConfigFun(profileConfig, "idFmps"))
