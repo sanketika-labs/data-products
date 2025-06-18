@@ -141,7 +141,6 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
   }
 
   def getOptionalNodes(courseId: String): Seq[String] = {
-    println("op" + s"$courseId:$courseId:${AppConf.getConfig("sunbird.course.optionalnodes")}")
     var optionalList = jedis.smembers(s"$courseId:$courseId:${AppConf.getConfig("sunbird.course.optionalnodes")}")
     import scala.collection.JavaConversions._
     optionalList.toSeq

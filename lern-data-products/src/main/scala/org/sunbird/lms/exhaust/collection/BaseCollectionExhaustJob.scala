@@ -247,10 +247,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
       val completedBatchIds = completedBatches.map(f => f.batchId)
       val collectionBatches = getCollectionBatches(collectionConfig.batchId, collectionConfig.batchFilter, collectionConfig.searchFilter, custodianOrgId, request.requested_channel)
       val collectionBatchesData = collectionBatches._2.filter(p => !completedBatchIds.contains(p.batchId))
-
-      //      val courseId = collectionBatchesData.map(x=>x.collectionId)
-      //      println("courseId", courseId)
-      //val courseCode = getCourseCode()
       //SB-26292: The request should fail if the course is retired with err_message: The request is made for retired collection
       if (collectionBatches._2.size > 0) {
         val result = CommonUtil.time(processBatches(userCachedDF, collectionBatchesData, storageConfig, Some(request.request_id), Some(request.requested_channel), processedRequests.toList, level, orgId, request.encryption_key, request))
@@ -627,10 +623,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
         sum("is_completed").alias("completed_activities")
       )
       .withColumn("total_activities", lit(activities.length))
-
-    // Step 4: Show or return result
-    //println("activity agg...")
-    //result.select("user_id", "total_activities", "completed_activities").show(false)
     result.select("user_id", "total_activities", "completed_activities")
   }
   def getCollectionBatchDF(persist: Boolean)(implicit spark: SparkSession): DataFrame = {
@@ -713,16 +705,6 @@ trait BaseCollectionExhaustJob extends BaseReportsJob with IJob with OnDemandExh
     res.show(false)
     res
   }
-
-  /**
-   * Scan Redis for keys matching a pattern and return all (key, value) pairs as a List.
-   * Uses the shared jedis instance. Do NOT close jedis here.
-   *
-   * @param pattern Redis key pattern to match
-   * @return List of (key, value) pairs
-   */
-
-
   /** END - Utility Methods */
 
 }
