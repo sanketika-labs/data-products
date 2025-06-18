@@ -77,7 +77,6 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
   def updateCertificateStatus(userEnrolmentDF: DataFrame): DataFrame = {
     userEnrolmentDF.withColumn("certificatestatus", when(col("certificates").isNotNull && size(col("certificates").cast("array<map<string, string>>")) > 0, "Issued")
         .when(col("issued_certificates").isNotNull && size(col("issued_certificates").cast("array<map<string, string>>")) > 0, "Issued").otherwise(""))
-      .withColumn("board", UDFUtils.extractFromArrayString(col("board")))
   }
 
   def filterAssessmentDF(assessmentDF: DataFrame): DataFrame = {
