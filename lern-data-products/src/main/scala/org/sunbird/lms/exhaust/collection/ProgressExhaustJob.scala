@@ -1,41 +1,41 @@
+// This Job has been written only for the FMPS usecase.
+
 package org.sunbird.lms.exhaust.collection
+
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import org.ekstep.analytics.framework.Level.INFO
 import org.ekstep.analytics.framework.conf.AppConf
-import org.ekstep.analytics.framework.util.{JSONUtils, JobLogger}
+import org.ekstep.analytics.framework.util.JSONUtils
 import org.ekstep.analytics.framework.{FrameworkContext, JobConfig}
 
-import scala.collection.immutable.Set
-import scala.collection.mutable
 
-case class UserAggData(user_id: String, activity_id: String, completedCount: Int, context_id: String)
-case class CourseData(courseid: String, leafNodesCount: String, level1Data: List[Level1Data])
-case class Level1Data(l1identifier: String, l1leafNodesCount: String)
-case class AssessmentData(courseid: String, assessmentIds: List[String])
 
 object ProgressExhaustJob extends BaseCollectionExhaustJob {
 
   override def getClassName = "org.sunbird.lms.exhaust.collection.ProgressExhaustJob"
+
   override def jobName() = "ProgressExhaustJob";
+
   override def jobId() = "progress-exhaust";
+
   override def getReportPath() = "progress-exhaust/";
+
   override def getReportKey() = "progress";
-  private val persistedDF:scala.collection.mutable.ListBuffer[DataFrame] = scala.collection.mutable.ListBuffer[DataFrame]();
+  private val persistedDF: scala.collection.mutable.ListBuffer[DataFrame] = scala.collection.mutable.ListBuffer[DataFrame]();
   private val defaultObjectType = "QuestionSet";
 
   override def getUserCacheColumns(): Seq[String] = {
-    Seq("userid", "state", "district", "cluster", "orgname", "schooludisecode", "schoolname", "block", "board", "rootorgid", "usertype", "usersubtype")
+    Seq("userid", "firstname", "lastname", "email", "orgname",  "rootorgid", "usertype", "username", "cin", "fmpsid","province")
   }
-  
-  override def getEnrolmentColumns() : Seq[String] = {
+
+  override def getEnrolmentColumns(): Seq[String] = {
     Seq("batchid", "userid", "courseid", "active", "certificates", "issued_certificates", "enrolleddate", "completedon", "contentstatus")
   }
-  
+
   override def unpersistDFs() {
     persistedDF.foreach(f => f.unpersist(true))
   }
@@ -44,41 +44,30 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
   private val assessmentAggDBSettings = Map("table" -> "assessment_aggregator", "keyspace" -> AppConf.getConfig("sunbird.courses.keyspace"), "cluster" -> "LMSCluster");
   private val contentHierarchyDBSettings = Map("table" -> "content_hierarchy", "keyspace" -> AppConf.getConfig("sunbird.content.hierarchy.keyspace"), "cluster" -> "ContentCluster");
   //private val filterColumns = Seq("courseid", "collectionName", "batchid", "batchName", "userid",  "state", "district", "orgname", "schooludisecode", "schoolname", "board", "block", "cluster", "usertype", "usersubtype", "enrolleddate", "completedon", "certificatestatus", "completionPercentage");
-  private val columnsOrder = List("Collection Id", "Collection Name", "Batch Id", "Batch Name", "User UUID", "State", "District", "Org Name", "School Id",
-    "School Name", "Block Name", "Cluster Name", "User Type", "User Sub Type", "Declared Board", "Enrolment Date", "Completion Date", "Certificate Status", "Progress", "Total Score")
-  private val columnMapping = Map("courseid" -> "Collection Id", "collectionName" -> "Collection Name", "batchid" -> "Batch Id", "batchName" -> "Batch Name", "userid" -> "User UUID",
-    "state" -> "State", "district" -> "District", "orgname" -> "Org Name", "schooludisecode" -> "School Id", "schoolname" -> "School Name", "block" -> "Block Name",
-    "cluster" -> "Cluster Name", "usertype" -> "User Type", "usersubtype" -> "User Sub Type", "board" -> "Declared Board", "enrolleddate" -> "Enrolment Date", "completedon" -> "Completion Date",
-    "completionPercentage" -> "Progress", "total_sum_score" -> "Total Score", "certificatestatus" -> "Certificate Status")
+  private val columnsOrder = List("Course ID", "Course Name", "Course Code", "Learner Profile", "Batch Id", "Batch Name", "User ID", "User Name", "First Name", "Last Name", "Email ID", "FMPS ID", "CIN", "Province", "Org Name", "User Type", "Enrolment Date", "Completion Date", "Total Modules", "Completed Modules",  "Certificate Status", "Progress", "Global Quiz Score")
+
+  private val columnMapping = Map("courseid" -> "Course ID", "collectionName" -> "Course Name", "coursecode" -> "Course Code", "learnerprofile" -> "Learner Profile", "batchid" -> "Batch Id", "batchName" -> "Batch Name", "userid" -> "User ID",
+    "state" -> "State", "district" -> "District", "orgname" -> "Org Name", "usertype" -> "User Type",  "enrolleddate" -> "Enrolment Date", "completedon" -> "Completion Date",
+    "completionPercentage" -> "Progress", "total_sum_score" -> "Global Quiz Score", "certificatestatus" -> "Certificate Status", "username" -> "User Name", "firstname" -> "First Name", "lastname" -> "Last Name", "email" -> "Email ID", "fmpsid" -> "FMPS ID", "cin" -> "CIN", "province" -> "Province", "total_activities" -> "Total Modules", "completed_activities" -> "Completed Modules" )
 
   override def processBatch(userEnrolmentDF: DataFrame, collectionBatch: CollectionBatch)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): DataFrame = {
-    val filterColumns : List[String] = config.modelParams.get.getOrElse("csvColumns", List[String]()).asInstanceOf[List[String]]
+    val filterColumns: List[String] = config.modelParams.get.getOrElse("csvColumns", List[String]()).asInstanceOf[List[String]]
     val hierarchyData = loadCollectionHierarchy(collectionBatch.collectionId)
-    //val collectionAggDF = getCollectionAggWithModuleData(collectionBatch, hierarchyData).withColumn("batchid", lit(collectionBatch.batchId));
-    //val enrolledUsersToBatch = updateCertificateStatus(userEnrolmentDF).select(filterColumns.head, filterColumns.tail: _*)
     val assessmentAggDF = getAssessmentDF(collectionBatch, userEnrolmentDF, hierarchyData);
-    //get optional node from
     val leafNodesCount = getLeafNodeCount(hierarchyData);
     val optionalNodes = getOptionalNodes(collectionBatch.collectionId)
-    //val broadcastedSet = spark.sparkContext.broadcast(optionalNodes)
     val enrolmentWithCompletions = userEnrolmentDF.withColumn("completionPercentage", UDFUtils.completionPercentage(col("contentstatus"), lit(leafNodesCount), typedLit(optionalNodes)));
     val enrolledUsersToBatch = updateCertificateStatus(enrolmentWithCompletions).select(filterColumns.head, filterColumns.tail: _*)
-    //val progressDF = getProgressDF(enrolledUsersToBatch, collectionAggDF, assessmentAggDF);
     val progressDF = getProgressDF(enrolledUsersToBatch, null, assessmentAggDF);
     organizeDF(progressDF, columnMapping, columnsOrder);
   }
 
   def getProgressDF(userEnrolmentDF: DataFrame, collectionAggDF: DataFrame, assessmentAggDF: DataFrame): DataFrame = {
-
-//    val collectionAggPivotDF = collectionAggDF.groupBy("courseid", "batchid", "userid", "completionPercentage").pivot(concat(col("l1identifier"), lit(" - Progress"))).agg(first(col("l1completionPercentage")))
-//      .drop("null")
     val assessmentAggPivotDF = assessmentAggDF.withColumn("content_score", concat(col("content_id"), lit(" - Score")))
       .groupBy("courseid", "batchid", "userid", "total_sum_score")
       .pivot("content_score").agg(concat(ceil((split(first("grand_total"), "\\/")
-      .getItem(0) * 100) / (split(first("grand_total"), "\\/")
-      .getItem(1))), lit("%")))
-    //val progressDF = collectionAggPivotDF.join(assessmentAggPivotDF, Seq("courseid", "batchid", "userid"), "left_outer")
-    //userEnrolmentDF.join(progressDF, Seq("courseid", "batchid", "userid"), "left_outer")
+        .getItem(0) * 100) / (split(first("grand_total"), "\\/")
+        .getItem(1))), lit("%")))
     userEnrolmentDF.join(assessmentAggPivotDF, Seq("courseid", "batchid", "userid"), "left_outer")
       .withColumn("completionPercentage", when(col("completedon").isNotNull, 100).otherwise(col("completionPercentage")))
       .withColumn("completedon", when(col("completedon").isNotNull, date_format(col("completedon"), "dd/MM/yyyy")).otherwise(""))
@@ -87,8 +76,7 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
 
   def updateCertificateStatus(userEnrolmentDF: DataFrame): DataFrame = {
     userEnrolmentDF.withColumn("certificatestatus", when(col("certificates").isNotNull && size(col("certificates").cast("array<map<string, string>>")) > 0, "Issued")
-      .when(col("issued_certificates").isNotNull && size(col("issued_certificates").cast("array<map<string, string>>")) > 0, "Issued").otherwise(""))
-      .withColumn("board", UDFUtils.extractFromArrayString(col("board")))
+        .when(col("issued_certificates").isNotNull && size(col("issued_certificates").cast("array<map<string, string>>")) > 0, "Issued").otherwise(""))
   }
 
   def filterAssessmentDF(assessmentDF: DataFrame): DataFrame = {
@@ -97,14 +85,14 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
     val df = Window.partitionBy("userid", "batchid", "courseid", "content_id").orderBy(desc(columnName))
     assessmentDF.withColumn("rownum", row_number.over(df)).where(col("rownum") === 1).drop("rownum")
   }
-  
+
   def getAssessmentAggData(userEnrolmentDF: DataFrame)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): DataFrame = {
     val df = loadData(assessmentAggDBSettings, cassandraFormat, new StructType())
       .select("course_id", "batch_id", "user_id", "content_id", "total_max_score", "total_score", "grand_total", "last_attempted_on")
       .withColumnRenamed("user_id", "userid")
       .withColumnRenamed("batch_id", "batchid")
       .withColumnRenamed("course_id", "courseid")
-    val assessmentDF = userEnrolmentDF.join(df, Seq("userid","courseid","batchid"), "inner").persist()
+    val assessmentDF = userEnrolmentDF.join(df, Seq("userid", "courseid", "batchid"), "inner").persist()
     persistedDF.append(assessmentDF)
     assessmentDF
   }
@@ -113,18 +101,18 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
 
     import spark.implicits._
     val contentDataDF = hierarchyData.rdd.map(row => {
-      val hierarchy = JSONUtils.deserialize[Map[String, AnyRef]](row.getString(1))
-      val objectTypeFilter = Option(AppConf.getConfig("assessment.metrics.supported.objecttype")).getOrElse("")
-      val questionTypes = if (objectTypeFilter.isEmpty) defaultObjectType else objectTypeFilter
+        val hierarchy = JSONUtils.deserialize[Map[String, AnyRef]](row.getString(1))
+        val objectTypeFilter = Option(AppConf.getConfig("assessment.metrics.supported.objecttype")).getOrElse("")
+        val questionTypes = if (objectTypeFilter.isEmpty) defaultObjectType else objectTypeFilter
 
-      val assessmentFilters = Map(
-        "assessmentTypes" -> AppConf.getConfig("assessment.metrics.supported.contenttype").split(",").toList,
-        "questionTypes" -> questionTypes.split(",").toList,
-        "primaryCategories" -> AppConf.getConfig("assessment.metrics.supported.primaryCategories").split(",").toList
-      )
+        val assessmentFilters = Map(
+          "assessmentTypes" -> AppConf.getConfig("assessment.metrics.supported.contenttype").split(",").toList,
+          "questionTypes" -> questionTypes.split(",").toList,
+          "primaryCategories" -> AppConf.getConfig("assessment.metrics.supported.primaryCategories").split(",").toList
+        )
 
-      filterAssessmentsFromHierarchy(List(hierarchy), assessmentFilters, AssessmentData(row.getString(0), List()))
-    }).toDF()
+        filterAssessmentsFromHierarchy(List(hierarchy), assessmentFilters, AssessmentData(row.getString(0), List()))
+      }).toDF()
       .select(col("courseid"), explode_outer(col("assessmentIds")).as("contentid"))
 
     val assessAggdf = filterAssessmentDF(getAssessmentAggData(userEnrolmentDF))
@@ -143,15 +131,15 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
   def loadCollectionHierarchy(identifier: String)(implicit spark: SparkSession, fc: FrameworkContext, config: JobConfig): DataFrame = {
     loadData(contentHierarchyDBSettings, cassandraFormat, new StructType()).where(col("identifier") === s"${identifier}").select("identifier", "hierarchy")
   }
-  
-  def getLeafNodeCount(hierarchyData: DataFrame) : Int = {
+
+  def getLeafNodeCount(hierarchyData: DataFrame): Int = {
     hierarchyData.rdd.map(row => {
       val hierarchy = JSONUtils.deserialize[Map[String, AnyRef]](row.getString(1))
       hierarchy.getOrElse("leafNodesCount", 0).asInstanceOf[Int]
     }).collect().head
   }
 
-  def getOptionalNodes(courseId: String) : Seq[String] = {
+  def getOptionalNodes(courseId: String): Seq[String] = {
     var optionalList = jedis.smembers(s"$courseId:$courseId:${AppConf.getConfig("sunbird.course.optionalnodes")}")
     import scala.collection.JavaConversions._
     optionalList.toSeq
@@ -176,7 +164,7 @@ object ProgressExhaustJob extends BaseCollectionExhaustJob {
         hierarchyDf.col("courseid"), col("completionPercentage"), hierarchyDf.col("l1identifier"), hierarchyDf.col("l1leafNodesCount"))
 
     val resDf = dataDf.join(userAgg, dataDf.col("l1identifier") === userAgg.col("activity_id") &&
-      userAgg.col("context_id") === dataDf.col("contextid") && userAgg.col("user_id") === dataDf.col("userid"), "left")
+        userAgg.col("context_id") === dataDf.col("contextid") && userAgg.col("user_id") === dataDf.col("userid"), "left")
       .withColumn("batchid", lit(batch.batchId))
       .withColumn("l1completionPercentage", when(userAgg.col("completedCount") >= dataDf.col("l1leafNodesCount"), 100).otherwise(userAgg.col("completedCount") / dataDf.col("l1leafNodesCount") * 100).cast("int"))
       .select("userid", "courseid", "batchid", "completionPercentage", "l1identifier", "l1completionPercentage")
